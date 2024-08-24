@@ -173,11 +173,12 @@ This repo is based on the MLLM codebase of [LAVIS](https://github.com/salesforce
 ## Citation
 If you find this work useful for your research, please cite [our paper](https://arxiv.org/pdf/2311.17911.pdf):
 ```
-@article{huang2023opera,
-  title={OPERA: Alleviating Hallucination in Multi-Modal Large Language Models via Over-Trust Penalty and Retrospection-Allocation},
-  author={Qidong Huang and Xiaoyi Dong and Pan zhang and Bin Wang and Conghui He and Jiaqi Wang and Dahua Lin and Weiming Zhang and Nenghai Yu},
-  journal={arXiv preprint arXiv:2311.17911},
-  year={2023}
+@inproceedings{huang2024opera,
+  title={Opera: Alleviating hallucination in multi-modal large language models via over-trust penalty and retrospection-allocation},
+  author={Huang, Qidong and Dong, Xiaoyi and Zhang, Pan and Wang, Bin and He, Conghui and Wang, Jiaqi and Lin, Dahua and Zhang, Weiming and Yu, Nenghai},
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
+  pages={13418--13427},
+  year={2024}
 }
 ```
 
