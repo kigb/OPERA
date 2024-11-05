@@ -18,7 +18,28 @@ This repository provides the official PyTorch implementation of the following pa
 > [Weiming Zhang](http://staff.ustc.edu.cn/~zhangwm/index.html)<sup>1</sup>, 
 > [Nenghai Yu](https://scholar.google.com/citations?user=7620QAMAAAAJ&hl=en)<sup>1</sup> <br>
 > <sup>1</sup>University of Science and Technology of China, <sup>2</sup>Shanghai AI Laboratory <br>
+### Prepare:
+```
+conda env create -f environment.yml
+conda activate opera
+python -m pip install -e transformers-4.29.2
+```
 
+in file `eval_configs/llava-1.5_eval.yaml`, change **line 14** into llava-1.5 checkpoint, for example `liuhaotian/llava-v1.5-7b`, or clone it into local and set local directory
+
+in file `minigpt4/configs/models/blip2_instruct_vicuna7b.yaml` change line 25 into vicuna checkpoint, you can download through this: https://huggingface.co/lmsys/vicuna-7b-v1.1 
+
+
+
+### Chair_eval:
+
+besides the custom args of opera, others are same as before.
+
+```bash 
+python chair_eval.py --use-prev-sample True --gpu-id 1 --beam 5 --scale_factor 50 --threshold 15 --num_attn_candidates 5 --penalty_weights 1 --method seed0_llava_opera --coco-data-dir ../COCO --model llava-1.5/instructblip --sample-save-name ../seed1.log
+```
+
+only have to change `--sample-save-name` into the test sample, for instance seed0's sample log. `--coco-data-dir` into the COCO directory. `--model` into llava or instructblip,  `method` into the name to save
 
 ## Overview
 

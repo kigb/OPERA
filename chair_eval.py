@@ -1,18 +1,19 @@
 import argparse
 import os
 import random
+from datetime import datetime
 
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 from tqdm import tqdm
-
+from random import sample, seed
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 from torchvision.utils import save_image
 
-from pope_loader import POPEDataSet
-from minigpt4.common.dist_utils import get_rank
+# from pope_loader import POPEDataSet
+
 from minigpt4.models import load_preprocess
 
 from minigpt4.common.config import Config
@@ -20,21 +21,23 @@ from minigpt4.common.dist_utils import get_rank
 from minigpt4.common.registry import registry
 
 # imports modules for registration
-from minigpt4.datasets.builders import *
-from minigpt4.models import *
-from minigpt4.processors import *
-from minigpt4.runners import *
-from minigpt4.tasks import *
+
 
 from PIL import Image
 from torchvision.utils import save_image
-
+from pycocotools.coco import COCO
 import matplotlib.pyplot as plt
 import matplotlib as mpl
-import seaborn
+
 import json
-
-
+def load_coco_data(data_dir):
+    annotation_file_path = os.path.join(data_dir,"annotations/instances_val2014.json")
+    caption_file_path = os.path.join(data_dir,"annotations/captions_val2014.json")
+    with open(annotation_file_path, "r") as f:
+        lines = f.readlines()
+    coco_anns = json.loads(lines[0])
+    coco = COCO(caption_file_path)
+    return coco, coco_anns
 MODEL_EVAL_CONFIG_PATH = {
     "minigpt4": "eval_configs/minigpt4_eval.yaml",
     "instructblip": "eval_configs/instructblip_eval.yaml",
@@ -63,35 +66,29 @@ def setup_seeds(config):
     cudnn.deterministic = True
 
 
-
-
-
 parser = argparse.ArgumentParser(description="POPE-Adv evaluation on LVLMs.")
-parser.add_argument("--model", type=str, help="model")
+parser.add_argument("--model", type=str, help="model",default="llava-1.5")
 parser.add_argument("--gpu-id", type=int, help="specify the gpu to load the model.")
 parser.add_argument(
     "--options",
     nargs="+",
     help="override some settings in the used config, the key-value pair "
-    "in xxx=yyy format will be merged into config file (deprecate), "
-    "change to --cfg-options instead.",
+         "in xxx=yyy format will be merged into config file (deprecate), "
+         "change to --cfg-options instead.",
 )
-parser.add_argument("--data_path", type=str, default="COCO_2014/val2014/", help="data path")
+parser.add_argument("--coco-data-dir",required=True, type=str, default=None)
 parser.add_argument("--batch_size", type=int, default=1, help="batch size")
 parser.add_argument("--num_workers", type=int, default=2, help="num workers")
-
+parser.add_argument("--method", type=str, default="output")
+parser.add_argument("--use-prev-sample", type=str, default=None)
 parser.add_argument("--beam", type=int)
 parser.add_argument("--sample", action='store_true')
 parser.add_argument("--scale_factor", type=float, default=50)
 parser.add_argument("--threshold", type=int, default=15)
 parser.add_argument("--num_attn_candidates", type=int, default=5)
 parser.add_argument("--penalty_weights", type=float, default=1.0)
+parser.add_argument("--sample-save-name",type=str, default="sample.log")
 args = parser.parse_known_args()[0]
-
-
-
-
-
 
 os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_id)
 args.cfg_path = MODEL_EVAL_CONFIG_PATH[args.model]
@@ -119,59 +116,85 @@ mean = (0.48145466, 0.4578275, 0.40821073)
 std = (0.26862954, 0.26130258, 0.27577711)
 norm = transforms.Normalize(mean, std)
 
+coco, coco_anns = load_coco_data(args.coco_data_dir)
+img_ids = coco.getImgIds()
+# ---------begin prepare sample dataset---------
+# Assuming coco and coco_anns are already loaded as in your original script
+img_ids = coco.getImgIds()
+sampled_img_ids = None
+if args.use_prev_sample is not None:
+    # Load sampled IDs from sample.log
+    with open(args.sample_save_name, 'r') as f:
+        sampled_img_ids = [int(line.strip()) for line in f.readlines()]
 
-img_files = os.listdir(args.data_path)
-random.shuffle(img_files)
+    print(f"Loaded {len(sampled_img_ids)} image IDs from {args.sample_save_name}")
+else:
+    # Number of samples
+    num_samples = args.image_numbers
+    if args.seed is not None:
+        seed(args.seed)
+    # Randomly sample 500 unique image IDs
+    sampled_img_ids = sample(img_ids, num_samples)
 
-with open(args.data_path + '../annotations_trainval2014/annotations/instances_val2014.json', 'r') as f:
-    lines = f.readlines()
-coco_anns = json.loads(lines[0])
-
+    # Write sampled IDs to a log file
+    with open(args.sample_save_name, 'w') as f:
+        for img_id in sampled_img_ids:
+            f.write(f"{img_id}\n")
+img_files = []
+for cur_img_id in sampled_img_ids:
+    cur_img = coco.loadImgs(cur_img_id)[0]
+    cur_img_path = cur_img["file_name"]
+    img_files.append(cur_img_path)
 img_dict = {}
-
 categories = coco_anns["categories"]
 category_names = [c["name"] for c in categories]
 category_dict = {int(c["id"]): c["name"] for c in categories}
-
+img_dict = {}
+categories = coco_anns["categories"]
+category_names = [c["name"] for c in categories]
+category_dict = {int(c["id"]): c["name"] for c in categories}
 for img_info in coco_anns["images"]:
     img_dict[img_info["id"]] = {"name": img_info["file_name"], "anns": []}
-
 for ann_info in coco_anns["annotations"]:
     img_dict[ann_info["image_id"]]["anns"].append(
         category_dict[ann_info["category_id"]]
     )
+# ---------end prepare sample dataset---------
 
-
-base_dir  = "./log/" + args.model
+# ---------begin prepare output data dir---------
+base_dir = os.path.join("./outputs")
 if not os.path.exists(base_dir):
-    os.mkdir(base_dir)
+    os.makedirs(base_dir)
+# ENDCOCOTEST_LOADINGINDEX
+now = datetime.now()
+t = now.strftime("%m%d%H%M")
+filename = args.method + t + ".json"
+# ---------end prepare output data dir---------
+for idx, img_id in tqdm(enumerate(range(len(img_files))), total=len(img_files)):
 
-
-for img_id in tqdm(range(len(img_files))):
-    if img_id == 500:
-        break
     img_file = img_files[img_id]
     img_id = int(img_file.split(".jpg")[0][-6:])
+
     img_info = img_dict[img_id]
     assert img_info["name"] == img_file
     img_anns = set(img_info["anns"])
     img_save = {}
     img_save["image_id"] = img_id
-
-    image_path = args.data_path + img_file
+    # begin process input data
+    image_path = os.path.join(args.coco_data_dir, "val2014", img_file)
     raw_image = Image.open(image_path).convert("RGB")
     image = vis_processors["eval"](raw_image).unsqueeze(0)
     image = image.to(device)
-    
-    qu = "Please describe this image in detail."
+
+    qu = "Describe the image."
     template = INSTRUCTION_TEMPLATE[args.model]
     qu = template.replace("<question>", qu)
-    
+
     with torch.inference_mode():
         with torch.no_grad():
             out = model.generate(
-                {"image": norm(image), "prompt":qu}, 
-                use_nucleus_sampling=args.sample, 
+                {"image": norm(image), "prompt": qu},
+                use_nucleus_sampling=args.sample,
                 num_beams=args.beam,
                 max_new_tokens=512,
                 output_attentions=True,
@@ -181,12 +204,32 @@ for img_id in tqdm(range(len(img_files))):
                 num_attn_candidates=args.num_attn_candidates,
                 penalty_weights=args.penalty_weights,
             )
-    img_save["caption"] = out[0]
 
-    # dump metric file
-    with open(os.path.join(base_dir, 'ours-s_{}-t_{}-num_can_{}-p_{}.jsonl'.format(args.scale_factor, args.threshold, args.num_attn_candidates, args.penalty_weights)), "a") as f:
+
+    output_text = out[0]
+    print(output_text)
+    sentence_list = output_text.split(".")
+    sentence_filter_list = []
+    for sentence in sentence_list:
+        if "unk" not in sentence:
+            sentence_filter_list.append(sentence)
+    output_text = ".".join(sentence_filter_list)
+    # print("decoder output text", output_text)
+    img_save["caption"] = output_text
+    # print("image_path: ", image_path)
+    # print("caption: ", output_text)
+    # 获取时间
+
+    generated_captions_path = os.path.join(
+        base_dir,
+        filename)
+    # print("generated_captions_path", generated_captions_path)
+    with open(generated_captions_path, "a") as f:
         json.dump(img_save, f)
-        f.write('\n')
-    
+        f.write("\n")
+
+print("the caption is saved into",generated_captions_path)
+
+
 
 
